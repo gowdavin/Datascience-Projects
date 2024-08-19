@@ -1,0 +1,144 @@
+import os
+
+import pandas as pd
+from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import roc_auc_score
+import numpy as np
+import gradio as gr
+from io import StringIO
+import warnings
+warnings.filterwarnings("ignore")
+import datetime
+
+def get_current_datetime():
+    now = datetime.datetime.now()
+    return now.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def process_csv_text(temp_file):
+    if isinstance(temp_file, str):
+        dft = pd.read_csv(StringIO(temp_file))
+    else:
+        dft = pd.read_csv(temp_file.name)
+    return dft
+
+    # To show only top5 rows of uploaded data
+
+
+
+default_csv = "..\\Data_Aug_23.csv"
+
+
+# df = pd.read_csv("..\\Data_Aug_23.csv")
+
+def get_predictions(df, output_dir=os.curdir, train_size=0.8):
+    # Remove invalid characters from the column
+    df['Bitwise_Tenure_in_Years'] = df['Bitwise_Tenure_in_Years'].astype(str).str.replace("'", "")
+    df['Bitwise_Tenure_in_Years'] = df['Bitwise_Tenure_in_Years'].astype(float)
+
+    cat_features = ['Designation_Level', 'Gender', 'Engagement_Category',
+                    'Project_Code', 'PM_Code', 'Rating', 'Joined_as', 'Skill',
+                    'Skill_Category', 'Market_Attractiveness_Score', 'Manager_Score',
+                    'Total_Awards_in_last_3_years']
+
+    df[cat_features] = df[cat_features].astype(object)
+
+    df = df.sort_values(by=['Attrition'], ascending=False)
+
+    # TODO: HOW TO MAKE BELOW 2 LINES DYNAMIC
+    #train = df.iloc[0:1900, ].copy()
+    #test = df.iloc[1901:2296, ].copy()
+    num_samples = len(df)
+    train_samples = int(num_samples * train_size)
+    test_samples = num_samples - train_samples
+    train = df.iloc[:train_samples, ].copy()
+    test = df.iloc[train_samples:, ].copy()
+
+    # y_test = test['Attrition']
+    test.drop(['Employee_ID', 'Attrition'], axis=1, inplace=True)
+
+    target = train['Attrition']
+    # let's remove the target feature and redundant features from the dataset
+    train.drop(['Employee_ID', 'Attrition'], axis=1, inplace=True)
+
+    X_train, X_test, y_train, y_test = train_test_split(train,
+                                                        target,
+                                                        test_size=0.03,
+                                                        random_state=5,
+                                                        stratify=target)
+
+    param_grid = {'C': np.arange(1e-03, 2, 0.01)}  # hyper-parameter list to fine-tune
+    log_gs = GridSearchCV(LogisticRegression(solver='liblinear',  # setting GridSearchCV
+                                             class_weight="balanced",
+                                             random_state=7),
+
+                          return_train_score=True,
+                          param_grid=param_grid,
+                          scoring='roc_auc',
+                          cv=10)
+
+    log_grid = log_gs.fit(X_train, y_train)
+    log_opt = log_grid.best_estimator_
+    results = log_gs.cv_results_
+
+    print('=' * 20)
+    print("best params: " + str(log_gs.best_estimator_))
+    print("best params: " + str(log_gs.best_params_))
+    print('best score:', log_gs.best_score_)
+    print('=' * 20)
+
+    print('Accuracy of Logistic Regression Classifier on test set: {:.2f}'.format(log_opt.score(X_test, y_test) * 100))
+
+    log_opt.fit(X_train, y_train)  # fit optimised model to the training data
+    probs = log_opt.predict_proba(X_test)  # predict probabilities
+    probs = probs[:, 1]  # we will only keep probabilities associated with the employee leaving
+    logit_roc_auc = roc_auc_score(y_test, probs)  # calculate AUC score using test dataset
+    # TODO: Display accuracy /performance on UI
+    print('AUC score: %.3f' % logit_roc_auc)
+    #output_str = 'AUC score: %.3f' % logit_roc_auc
+
+    probs2 = log_opt.predict_proba(test)  # predict probabilities
+    probs2 = probs2[:, 1]  # we will only keep probabilities associated with the employee leaving
+
+    y_hats_df = pd.DataFrame(data=probs2, columns=['prob'], index=test.index.copy())
+    df_out = pd.merge(df, y_hats_df, left_index=True, right_index=True)
+    sample_predictions = df_out.head(5)
+
+    # TODO: Display sample output on UI and make o/p file name dynamic
+    #df_out.to_csv("Test_result_AUG_23_log_2.csv")
+    #df_out_str = df_out.to_csv(index=False)  # Convert DataFrame to CSV string
+    #return output_str, df_out_str  # Return both the AUC score and the predicted data as strings
+    output_csv_filename = os.path.join(output_dir, "Test_result_AUG_23_log_2.csv")
+    df_out.to_csv(output_csv_filename)
+    return  sample_predictions
+
+
+
+
+cols = ["Employee_ID", "Attrition", "Designation_Level", "Gender", "Engagement_Category",
+        "Project_Code", "PM_Code", "Rating", "Total_Experience",
+        "Bitwise_Tenure_in_Years", "Joined_as", "Age", "Salary", "Skill", "Skill_Category",
+        "Market_Attractiveness_Score", "Manager_Score", "Total_Awards_in_last_3_years"]
+col_count = len(cols)
+
+
+with gr.Blocks(css=".gradio-container {background-color: lightgray;}",) as demo:
+    gr.HTML(
+        f"<div style='position: absolute; top: 10px; right: 10px; font-size: 16px;'>Current Date and Time: <span id='current-datetime'>{get_current_datetime()}</span></div>")
+    image_url="https://mma.prnewswire.com/media/1654428/logo.jpg?p=publish"
+    gr.HTML(f"<img src='{image_url}' style='position: absolute; top: 10px; left: 10px; width: 140px; height: 50px;'>")
+    gr.HTML("<h1 style='font-size: 30px; text-align: center;color: red;'>Bitwise Attrition Prediction Model</h1>")
+    #gr.Textbox("Bitwise Attrition Model", style={"fontSize":90, "textAlign":"center"})
+    operation = gr.inputs.Radio(["Predict", "View Data"],
+                                label="Please select the operation you would like to perform:")
+    upload_button = gr.UploadButton(label="Upload Data", file_types=['.csv'], live=True, file_count="single")
+    table = gr.Dataframe(headers=cols, type="pandas", col_count=col_count)
+    output_dir = gr.inputs.Textbox(label="Output Directory (optional)", default=os.curdir)
+    upload_button.upload(fn=process_csv_text, inputs=upload_button, outputs=table, api_name="upload_csv")
+    print(type(table))
+    predict_btn = gr.Button(value="Predict")
+    #txt_3 = gr.Textbox(value="", label="Output")
+    sample_predictions = gr.Dataframe(headers=["Sample Prediction"], type="pandas")
+    predict_btn.click(get_predictions, inputs=[table,output_dir], outputs=[sample_predictions])
+    #theme = 'darkhuggingface'
